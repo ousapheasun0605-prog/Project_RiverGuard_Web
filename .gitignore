@@ -1,0 +1,21 @@
+# Python cache and virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Secrets
+.env
+.env.*
+
+# Safe example configuration files
+!.env.example
+
+# Frontend dependencies and build output
+node_modules/
+dist/
+
+# Editor and OS files
+.vscode/
+.DS_Store
+Thumbs.db
