@@ -19,3 +19,18 @@ dist/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Generated Prisma Client
+**/src/generated/prisma/
+# Temporary MQTT test payloads
+Backend/ack*.json
+Backend/duplicate_completed.json
+Backend/invalid_transition.json
+Backend/mission_active.json
+Backend/mission_completed.json
+Backend/mission_failed.json
+Backend/mission_stopped.json
+Backend/reconnect_test.json
+Backend/robot_online.json
+Backend/status.json
+Backend/telemetry.json
