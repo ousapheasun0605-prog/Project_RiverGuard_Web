@@ -1,0 +1,180 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  ADMIN
+  OPERATOR
+}
+
+enum RobotStatus {
+  ONLINE
+  OFFLINE
+  UNKNOWN
+}
+
+enum MissionStatus {
+  PLANNED
+  ACTIVE
+  COMPLETED
+  STOPPED
+  FAILED
+}
+
+enum CommandType {
+  START_MISSION
+  STOP_MISSION
+  RETURN_HOME
+  EMERGENCY_STOP
+}
+
+enum CommandStatus {
+  PENDING
+  SENT
+  ACKNOWLEDGED
+  FAILED
+  TIMED_OUT
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         UserRole @default(OPERATOR)
+  isActive     Boolean  @default(true)
+
+  missions Mission[]
+  commands Command[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Robot {
+  id         Int         @id @default(1)
+  name       String      @unique
+  status     RobotStatus @default(UNKNOWN)
+  lastSeenAt DateTime?
+
+  missions Mission[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Mission {
+  id          Int           @id @default(autoincrement())
+  missionCode String        @unique
+  name        String
+  status      MissionStatus @default(PLANNED)
+
+  startedAt DateTime?
+  endedAt   DateTime?
+
+  initiatedByUserId Int
+  robotId           Int
+
+  initiatedBy User  @relation(fields: [initiatedByUserId], references: [id])
+  robot       Robot @relation(fields: [robotId], references: [id])
+
+  telemetry Telemetry[]
+  commands  Command[]
+  images    Image[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Telemetry {
+  id Int @id @default(autoincrement())
+
+  missionId Int?
+
+  latitude     Float?
+  longitude    Float?
+  speed        Float?
+  batteryLevel Float?
+  heading      Float?
+
+  recordedAt DateTime @default(now())
+
+  mission Mission? @relation(fields: [missionId], references: [id])
+
+  @@index([missionId, recordedAt])
+}
+
+model Command {
+  id Int @id @default(autoincrement())
+
+  type   CommandType
+  status CommandStatus @default(PENDING)
+
+  issuedByUserId Int
+  missionId      Int?
+
+  payload  Json?
+  response Json?
+  attemptCount  Int       @default(0)
+  lastAttemptAt DateTime?
+  nextRetryAt   DateTime?
+  lastError     String?
+
+  sentAt         DateTime?
+  acknowledgedAt DateTime?
+
+  issuedBy User     @relation(fields: [issuedByUserId], references: [id])
+  mission  Mission? @relation(fields: [missionId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([missionId])
+  @@index([issuedByUserId])
+  @@index([status, createdAt])
+}
+
+model Image {
+  id Int @id @default(autoincrement())
+
+  missionId Int
+
+  fileName   String
+  storageKey String @unique
+  mimeType   String
+  fileSize   Int
+
+  width  Int?
+  height Int?
+
+  capturedAt DateTime @default(now())
+
+  mission    Mission     @relation(fields: [missionId], references: [id])
+  detections Detection[]
+
+  createdAt DateTime @default(now())
+
+  @@index([missionId, capturedAt])
+}
+
+model Detection {
+  id Int @id @default(autoincrement())
+
+  imageId Int
+
+  category   String
+  confidence Float
+
+  boundingBox Json?
+
+  image Image @relation(fields: [imageId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([imageId])
+  @@index([category])
+}
