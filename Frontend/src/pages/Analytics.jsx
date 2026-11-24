@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+import api, { errorText } from "../lib/api";
 import {
   Activity,
   CheckCircle2,
@@ -23,9 +25,6 @@ import {
 
 const wasteColors = ["#2F76A8", "#75B9D3", "#39866B"];
 
-const wasteData = [];
-const missionDistanceData = [];
-const cleanupTrendData = [];
 
 function SummaryCard({ icon: Icon, label, value, unit, description }) {
   return (
@@ -75,6 +74,19 @@ function ChartPanel({ title, description, children, className = "" }) {
 }
 
 export default function Analytics() {
+  const [stats, setStats] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    api
+      .get("/stats")
+      .then((res) => setStats(res.data))
+      .catch((e) => setError(errorText(e)));
+  }, []);
+
+  const wasteData = stats?.waste || [];
+  const missionDistanceData = stats?.perMission || [];
+  const cleanupTrendData = stats?.perDay || [];
   const hasWasteData = wasteData.length > 0;
   const hasMissionData = missionDistanceData.length > 0;
   const hasTrendData = cleanupTrendData.length > 0;
@@ -88,37 +100,38 @@ export default function Analytics() {
         </div>
       </div>
 
+      {error && <div className="control-warning">{error}</div>}
+
       {/* Performance overview */}
       <section className="analytics-overview">
         <SummaryCard
           icon={Waves}
-          label="Debris removed"
-          value="—"
-          unit="kg"
-          description="Total collected waste"
+          label="Missions"
+          value={stats ? stats.missions : "—"}
+          description="All missions in the database"
         />
 
         <SummaryCard
           icon={CheckCircle2}
           label="Completed missions"
-          value="—"
-          description="Successfully completed missions"
+          value={stats ? stats.completed : "—"}
+          description="Trips that returned home"
         />
 
         <SummaryCard
           icon={Route}
           label="Waterway covered"
-          value="—"
+          value={stats ? stats.totalDistanceKm : "—"}
           unit="km"
-          description="Total distance covered"
+          description="Total GPS distance on missions"
         />
 
         <SummaryCard
           icon={Gauge}
-          label="Collection efficiency"
-          value="—"
-          unit="kg/hr"
-          description="Average collection rate"
+          label="Time on water"
+          value={stats ? stats.totalHours : "—"}
+          unit="h"
+          description={stats ? `${stats.telemetryCount} telemetry points stored` : "Mission hours"}
         />
       </section>
 
@@ -126,7 +139,7 @@ export default function Analytics() {
       <section className="analytics-chart-grid">
         <ChartPanel
           title="Waste distribution"
-          description="Collected waste by category"
+          description="AI detections by category"
           className="analytics-waste-panel"
         >
           {hasWasteData ? (
@@ -167,13 +180,13 @@ export default function Analytics() {
                       }}
                     />
                     <span>{item.name}</span>
-                    <strong>{item.value} kg</strong>
+                    <strong>{item.value}</strong>
                   </div>
                 ))}
               </div>
             </div>
           ) : (
-            <EmptyChart message="Waste category statistics will appear when collection records are available." />
+            <EmptyChart message="Waste categories appear when AI detections are uploaded." />
           )}
         </ChartPanel>
 
@@ -226,7 +239,7 @@ export default function Analytics() {
       <section className="analytics-trend-section">
         <ChartPanel
           title="Cleanup trends"
-          description="Waste collection over time"
+          description="Distance covered per day"
           className="analytics-trend-panel"
         >
           {hasTrendData ? (
@@ -251,13 +264,13 @@ export default function Analytics() {
                     tick={{ fill: "#64849B", fontSize: 12 }}
                     axisLine={false}
                     tickLine={false}
-                    unit=" kg"
+                    unit=" km"
                   />
                   <Tooltip />
                   <Line
                     type="monotone"
-                    dataKey="waste"
-                    name="Waste collected"
+                    dataKey="distance"
+                    name="Distance (km)"
                     stroke="#2F76A8"
                     strokeWidth={3}
                     dot={{ r: 4, fill: "#2F76A8" }}
@@ -267,7 +280,7 @@ export default function Analytics() {
               </ResponsiveContainer>
             </div>
           ) : (
-            <EmptyChart message="Collection trends will appear once mission data has been recorded over time." />
+            <EmptyChart message="Trends appear once missions have recorded GPS tracks." />
           )}
         </ChartPanel>
       </section>

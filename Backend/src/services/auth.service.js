@@ -5,7 +5,7 @@ import prisma from "../config/prisma.js";
 export const loginUser = async (email, password) => {
 
   const user = await prisma.user.findUnique({
-    where: { email },
+    where: { email: String(email).trim().toLowerCase() },
   });
 
   if (!user) {

@@ -3,13 +3,17 @@ import { saveTelemetry } from "../services/telemetry.service.js";
 import { updateRobotStatus } from "../services/robot.service.js";
 import { processCommandAcknowledgement } from "../services/command.service.js";
 import { processMissionStatusUpdate } from "../services/mission.service.js";
+import { handleFirmwareTelemetry } from "../services/boat.service.js";
+import { BOAT_TELEMETRY_TOPIC, isFirmwareProtocol } from "../config/boat.js";
 
-const topics = [
+const jsonTopics = [
   "robot/1/telemetry",
   "robot/1/status",
   "robot/1/ack",
   "robot/1/mission",
 ];
+
+const topics = isFirmwareProtocol() ? [BOAT_TELEMETRY_TOPIC] : jsonTopics;
 
 let messageListenerRegistered = false;
 
@@ -18,6 +22,11 @@ const handleMessage = async (topic, payload) => {
 
   try {
     const message = JSON.parse(rawPayload);
+
+    if (topic === BOAT_TELEMETRY_TOPIC) {
+      await handleFirmwareTelemetry(message);
+      return;
+    }
 
     console.log("MQTT message received:", {
       topic,

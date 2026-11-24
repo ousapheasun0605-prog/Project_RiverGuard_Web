@@ -8,6 +8,7 @@ import {
 
 const getErrorStatus = (error) => {
   if (error.message === "Mission not found") return 404;
+  if (error.message.startsWith("Command publishing failed")) return 503;
 
   if (
     error.message.includes("already") ||
@@ -76,7 +77,15 @@ export const startMissionController = async (req, res) => {
   try {
     const missionId = Number(req.params.id);
 
-    const result = await startMission(missionId, req.user.id);
+    const { target, waitMin, speed } = req.body || {};
+    const options = {};
+    if (target) {
+      options.target = { lat: Number(target.lat), lon: Number(target.lon) };
+    }
+    if (waitMin !== undefined && waitMin !== null && waitMin !== "") options.waitMin = Number(waitMin);
+    if (speed !== undefined && speed !== null && speed !== "") options.speed = Number(speed);
+
+    const result = await startMission(missionId, req.user.id, options);
 
     return res.status(200).json(result);
   } catch (error) {
@@ -92,7 +101,9 @@ export const stopMissionController = async (req, res) => {
   try {
     const missionId = Number(req.params.id);
 
-    const result = await stopMission(missionId, req.user.id);
+    const result = await stopMission(missionId, req.user.id, {
+      returnHome: Boolean(req.body?.returnHome),
+    });
 
     return res.status(200).json(result);
   } catch (error) {

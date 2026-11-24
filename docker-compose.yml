@@ -1,0 +1,76 @@
+# RiverGuard web stack. Start everything with:  ./run.sh
+name: riverguard
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: riverguard
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: riverguard
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U riverguard -d riverguard"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    ports:
+      - "${MQTT_PORT:-1883}:1883"
+
+  backend:
+    build: ./Backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    environment:
+      PORT: 5000
+      DATABASE_URL: postgresql://riverguard:${POSTGRES_PASSWORD}@db:5432/riverguard
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1d}
+      FRONTEND_URL: http://localhost:${WEB_PORT:-8080}
+      MQTT_BROKER_URL: ${MQTT_BROKER_URL:-mqtt://mosquitto:1883}
+      MQTT_USERNAME: ${MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
+      MQTT_CLIENT_ID: ${MQTT_CLIENT_ID:-riverguard-backend}
+      BOAT_PROTOCOL: ${BOAT_PROTOCOL:-firmware}
+      BOAT_TOPIC_PREFIX: ${BOAT_TOPIC_PREFIX:-riverguard-itc}
+      CAMERA_URL: ${CAMERA_URL:-}
+      ADMIN_NAME: ${ADMIN_NAME:-Admin}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      TZ: ${TZ:-Asia/Phnom_Penh}
+
+  web:
+    build: ./Frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${WEB_PORT:-8080}:80"
+
+  # Fake boat for testing without hardware: ./run.sh --sim
+  simulator:
+    build: ./Backend
+    profiles: ["sim"]
+    restart: unless-stopped
+    depends_on:
+      - mosquitto
+    command: ["node", "tools/boat_simulator.js"]
+    environment:
+      MQTT_BROKER_URL: ${MQTT_BROKER_URL:-mqtt://mosquitto:1883}
+      BOAT_TOPIC_PREFIX: ${BOAT_TOPIC_PREFIX:-riverguard-itc}
+      SIM_TELE_MS: ${SIM_TELE_MS:-1000}
+
+volumes:
+  db-data:

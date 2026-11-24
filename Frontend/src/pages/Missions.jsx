@@ -1,78 +1,86 @@
 import MissionRouteMap from "../components/MissionRouteMap";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import api, { errorText } from "../lib/api";
 import {
   ChevronDown,
   ChevronUp,
   Clock3,
-  MapPin,
   Route,
   Recycle,
   Search,
   Waves,
 } from "lucide-react";
 
-const demoMissions = [
-  {
-    id: "RGM-024",
-    robot: "RG-01",
-    status: "Completed",
-    date: "Demo · Oct 24, 2026",
-    duration: "32 min",
-    distance: "1.8 km",
-    waste: "2.3 kg",
-    progress: 100,
-    description: "Cleanup mission completed.",
-    commands: [
-      { time: "09:12:04", command: "Return to docking station", result: "Demo" },
-      { time: "09:08:32", command: "Collection cycle completed", result: "Demo" },
-      { time: "09:00:15", command: "Mission started", result: "Demo" },
-    ],
-  },
-  {
-    id: "RGM-023",
-    robot: "RG-01",
-    status: "Completed",
-    date: "Demo · Oct 23, 2026",
-    duration: "27 min",
-    distance: "1.4 km",
-    waste: "1.7 kg",
-    progress: 100,
-    description: "Cleanup mission completed.",
-    commands: [
-      { time: "14:27:10", command: "Return to docking station", result: "Demo" },
-      { time: "14:14:20", command: "Collection cycle completed", result: "Demo" },
-      { time: "14:00:00", command: "Mission started", result: "Demo" },
-    ],
-  },
-  {
-    id: "RGM-022",
-    robot: "RG-01",
-    status: "Stopped",
-    date: "Demo · Oct 22, 2026",
-    duration: "12 min",
-    distance: "0.6 km",
-    waste: "0.8 kg",
-    progress: 42,
-    description: "Mission stopped in this illustrative example.",
-    commands: [
-      { time: "10:12:45", command: "Mission stopped", result: "Demo" },
-      { time: "10:00:00", command: "Mission started", result: "Demo" },
-    ],
-  },
-];
+const STATUS_LABEL = {
+  PLANNED: "Planned",
+  ACTIVE: "Active",
+  COMPLETED: "Completed",
+  STOPPED: "Stopped",
+  FAILED: "Failed",
+};
+
+const toRad = (d) => (d * Math.PI) / 180;
+const haversine = (a, b) => {
+  const R = 6371000;
+  const dLat = toRad(b[0] - a[0]);
+  const dLon = toRad(b[1] - a[1]);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a[0])) * Math.cos(toRad(b[0])) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+};
+
+const routeOf = (telemetry = []) =>
+  telemetry.filter((p) => p.latitude != null && p.longitude != null).map((p) => [p.latitude, p.longitude]);
+
+const distanceKm = (route) => {
+  let m = 0;
+  for (let i = 1; i < route.length; i += 1) {
+    const step = haversine(route[i - 1], route[i]);
+    if (step < 200) m += step;
+  }
+  return m / 1000;
+};
+
+const fmtDuration = (from, to) => {
+  if (!from) return "—";
+  const s = Math.max(0, Math.round(((to ? new Date(to) : new Date()) - new Date(from)) / 1000));
+  const min = Math.floor(s / 60);
+  return min >= 60 ? `${Math.floor(min / 60)} h ${min % 60} min` : `${min} min ${s % 60} s`;
+};
+
+const fmtDate = (iso) =>
+  iso ? new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "—";
+
+const COMMAND_LABEL = {
+  START_MISSION: "Start mission",
+  STOP_MISSION: "Stop mission",
+  RETURN_HOME: "Return home",
+  EMERGENCY_STOP: "Emergency stop",
+};
 
 function StatusBadge({ status }) {
-  const statusClass = status.toLowerCase();
-
   return (
-    <span className={`mission-status ${statusClass}`}>
+    <span className={`mission-status ${status.toLowerCase()}`}>
       <span className="status-dot" />
-      {status}
+      {STATUS_LABEL[status] || status}
     </span>
   );
 }
 
 function MissionCard({ mission, expanded, onToggle }) {
+  const [detail, setDetail] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (!expanded) return;
+    api
+      .get(`/missions/${mission.id}`)
+      .then((res) => setDetail(res.data.mission))
+      .catch((e) => setError(errorText(e)));
+  }, [expanded, mission.id]);
+
+  const route = routeOf(detail?.telemetry);
+  const commands = detail?.commands || [];
+
   return (
     <article className={`mission-card ${expanded ? "expanded" : ""}`}>
       <button
@@ -83,18 +91,18 @@ function MissionCard({ mission, expanded, onToggle }) {
         aria-controls={`details-${mission.id}`}
       >
         <div className="mission-id-block">
-          <span className="mission-id">{mission.id}</span>
-          <span className="mission-date">{mission.date}</span>
+          <span className="mission-id">{mission.missionCode}</span>
+          <span className="mission-date">{fmtDate(mission.startedAt || mission.createdAt)}</span>
         </div>
 
         <div className="mission-robot">
           <span className="mission-field-label">Robot</span>
-          <span>{mission.robot}</span>
+          <span>{mission.robot?.name || "—"}</span>
         </div>
 
         <div className="mission-waste">
-          <span className="mission-field-label">Waste collected</span>
-          <strong>{mission.waste}</strong>
+          <span className="mission-field-label">Started by</span>
+          <strong>{mission.initiatedBy?.name || "—"}</strong>
         </div>
 
         <StatusBadge status={mission.status} />
@@ -111,7 +119,7 @@ function MissionCard({ mission, expanded, onToggle }) {
               <Clock3 size={16} />
               <div>
                 <span>Duration</span>
-                <strong>{mission.duration}</strong>
+                <strong>{fmtDuration(mission.startedAt, mission.endedAt)}</strong>
               </div>
             </div>
 
@@ -119,15 +127,15 @@ function MissionCard({ mission, expanded, onToggle }) {
               <Route size={16} />
               <div>
                 <span>Distance traveled</span>
-                <strong>{mission.distance}</strong>
+                <strong>{detail ? `${distanceKm(route).toFixed(2)} km` : "…"}</strong>
               </div>
             </div>
 
             <div className="mission-detail-stat">
               <Recycle size={16} />
               <div>
-                <span>Waste collected</span>
-                <strong>{mission.waste}</strong>
+                <span>GPS points</span>
+                <strong>{detail ? route.length : "…"}</strong>
               </div>
             </div>
           </div>
@@ -136,29 +144,32 @@ function MissionCard({ mission, expanded, onToggle }) {
             <section className="mission-route-section">
               <div className="mission-section-heading">
                 <h3>Mission route</h3>
-                <span>Illustrative preview</span>
+                <span>{route.length > 1 ? "Recorded GPS track" : "No GPS track"}</span>
               </div>
 
-              <MissionRouteMap positions={mission.route ?? []} />
+              <MissionRouteMap positions={route} />
 
-              <p className="mission-description">{mission.description}</p>
+              {error && <p className="mission-description">{error}</p>}
             </section>
 
             <section className="mission-commands-section">
               <div className="mission-section-heading">
                 <h3>Command history</h3>
-                <span>{mission.commands.length} demo entries</span>
+                <span>{commands.length} entries</span>
               </div>
 
               <div className="mission-command-list">
-                {mission.commands.map((item, index) => (
-                  <div className="mission-command-item" key={`${item.time}-${index}`}>
-                    <span className="mission-command-time">{item.time}</span>
+                {commands.length === 0 && <p className="mission-description">No commands recorded.</p>}
+                {commands.map((item) => (
+                  <div className="mission-command-item" key={item.id}>
+                    <span className="mission-command-time">
+                      {new Date(item.createdAt).toLocaleTimeString()}
+                    </span>
                     <div className="mission-command-info">
-                      <strong>{item.command}</strong>
-                      <span>Illustrative entry</span>
+                      <strong>{COMMAND_LABEL[item.type] || item.type}</strong>
+                      <span>{item.lastError || (item.payload?.lines ? item.payload.lines.join(" · ") : item.payload?.text || "")}</span>
                     </div>
-                    <span className="demo-result">{item.result}</span>
+                    <span className={`command-result ${item.status.toLowerCase()}`}>{item.status}</span>
                   </div>
                 ))}
               </div>
@@ -171,14 +182,27 @@ function MissionCard({ mission, expanded, onToggle }) {
 }
 
 export default function Missions() {
+  const [missions, setMissions] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
   const [expandedMission, setExpandedMission] = useState(null);
+
+  useEffect(() => {
+    api
+      .get("/missions")
+      .then((res) => setMissions(res.data.missions))
+      .catch((e) => setLoadError(errorText(e)))
+      .finally(() => setLoading(false));
+  }, []);
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
 
-  const filteredMissions = demoMissions.filter((mission) => {
+  const filteredMissions = missions.filter((mission) => {
+    const q = searchTerm.toLowerCase();
     const matchesSearch =
-      mission.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      mission.robot.toLowerCase().includes(searchTerm.toLowerCase());
+      mission.missionCode.toLowerCase().includes(q) ||
+      mission.name.toLowerCase().includes(q) ||
+      (mission.robot?.name || "").toLowerCase().includes(q);
 
     const matchesStatus =
       statusFilter === "All" || mission.status === statusFilter;
@@ -195,8 +219,8 @@ export default function Missions() {
         </div>
 
         <span className="demo-data-label">
-          <span className="status-dot" />
-          Illustrative data
+          <span className="status-dot online" />
+          Live database
         </span>
       </header>
 
@@ -232,8 +256,9 @@ export default function Missions() {
           aria-label="Filter missions by status"
         >
           <option value="All">All statuses</option>
-          <option value="Completed">Completed</option>
-          <option value="Stopped">Stopped</option>
+          {Object.entries(STATUS_LABEL).map(([value, label]) => (
+            <option key={value} value={value}>{label}</option>
+          ))}
         </select>
       </section>
 
@@ -243,7 +268,11 @@ export default function Missions() {
       </div>
 
       <section className="mission-list">
-        {filteredMissions.length > 0 ? (
+        {loading ? (
+          <div className="missions-empty-state"><strong>Loading missions…</strong></div>
+        ) : loadError ? (
+          <div className="missions-empty-state"><strong>{loadError}</strong></div>
+        ) : filteredMissions.length > 0 ? (
           filteredMissions.map((mission) => (
             <MissionCard
               key={mission.id}
@@ -259,16 +288,12 @@ export default function Missions() {
         ) : (
           <div className="missions-empty-state">
             <Search size={22} />
-            <strong>No matching missions</strong>
-            <p>Try another mission ID, robot, or status.</p>
+            <strong>{missions.length ? "No matching missions" : "No missions yet"}</strong>
+            <p>{missions.length ? "Try another mission ID, robot, or status." : "Start one from the Dashboard."}</p>
           </div>
         )}
       </section>
 
-      <p className="missions-disclaimer">
-        Demo records are for interface testing only. Actual mission data will
-        come from the RiverGuard database.
-      </p>
     </div>
   );
 }

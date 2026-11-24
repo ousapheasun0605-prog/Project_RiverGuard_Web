@@ -6,7 +6,11 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "nodemon src/index.js",
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "seed": "node scripts/seed.js",
+    "simulate": "node tools/boat_simulator.js",
+    "migrate": "prisma migrate deploy",
+    "generate": "prisma generate"
   },
   "keywords": [],
   "author": "",
