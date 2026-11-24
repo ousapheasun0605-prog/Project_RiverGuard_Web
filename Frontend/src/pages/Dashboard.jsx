@@ -1,80 +1,23 @@
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import {
-  Activity,
   Battery,
   Clock3,
+  Gamepad2,
   Gauge,
   MapPin,
   Plus,
   Radio,
-  Route,
-  ShieldCheck,
   Square,
-  Waves,
+  Undo2,
+  X,
 } from "lucide-react";
 
-import {
-  Circle,
-  MapContainer,
-  Marker,
-  Polyline,
-  TileLayer,
-  useMapEvents,
-} from "react-leaflet";
-import L from "leaflet";
-import "leaflet/dist/leaflet.css";
-
-const initialPosition = [11.5564, 104.9282];
-
-const commands = [
-  {
-    time: "--:--:--",
-    command: "Awaiting robot connection",
-    source: "System",
-    result: "Unavailable",
-  },
-];
-
-const robotIcon = L.divIcon({
-  className: "robot-map-icon",
-  html: '<div class="robot-map-marker"><span></span></div>',
-  iconSize: [28, 28],
-  iconAnchor: [14, 14],
-});
-
-function PlanningMap({ planning, areaPoints, setAreaPoints }) {
-  useMapEvents({
-    click(event) {
-      if (!planning) return;
-
-      setAreaPoints((current) => [
-        ...current,
-        [event.latlng.lat, event.latlng.lng],
-      ]);
-    },
-  });
-
-  return (
-    <>
-      {areaPoints.length > 0 && (
-        <Polyline positions={areaPoints} color="#2f76a8" weight={3} />
-      )}
-
-      {areaPoints.length >= 3 && (
-        <PolygonPlaceholder positions={areaPoints} />
-      )}
-    </>
-  );
-}
-
-function PolygonPlaceholder({ positions }) {
-  return (
-    <Polyline
-      positions={[...positions, positions[0]]}
-      pathOptions={{ color: "#2f76a8", dashArray: "6 6", weight: 2 }}
-    />
-  );
-}
+import BoatMap from "../components/BoatMap";
+import CameraPanel from "../components/CameraPanel";
+import { ActivityLog, ConnectionBadge } from "../components/LivePanels";
+import api, { errorText } from "../lib/api";
+import { useBoat } from "../lib/boat";
 
 function StatusCard({ icon: Icon, label, value, detail }) {
   return (
@@ -89,30 +32,105 @@ function StatusCard({ icon: Icon, label, value, detail }) {
   );
 }
 
+const duration = (from, to) => {
+  if (!from) return "—";
+  const s = Math.max(0, Math.round(((to ? new Date(to) : new Date()) - new Date(from)) / 1000));
+  const m = Math.floor(s / 60);
+  return m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min ${s % 60} s`;
+};
+
 export default function Dashboard() {
+  const { telemetry, trail, online, secondsAgo, missionEvent } = useBoat();
+  const t = telemetry || {};
+
+  const [missions, setMissions] = useState([]);
   const [planning, setPlanning] = useState(false);
-  const [areaPoints, setAreaPoints] = useState([]);
-  const [missionActive, setMissionActive] = useState(false);
+  const [target, setTarget] = useState(null);
+  const [waitMin, setWaitMin] = useState(5);
+  const [speed, setSpeed] = useState(30);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState(null);
 
-  function beginPlanning() {
-    setAreaPoints([]);
+  const loadMissions = useCallback(async () => {
+    try {
+      const res = await api.get("/missions");
+      setMissions(res.data.missions);
+    } catch (error) {
+      setMessage(errorText(error));
+    }
+  }, []);
+
+  useEffect(() => {
+    api
+      .get("/missions")
+      .then((res) => setMissions(res.data.missions))
+      .catch((error) => setMessage(errorText(error)));
+  }, [missionEvent]);
+
+  // Poll while a start/stop is waiting for the boat.
+  useEffect(() => {
+    const id = setInterval(loadMissions, 5000);
+    return () => clearInterval(id);
+  }, [loadMissions]);
+
+  const active = missions.find((m) => m.status === "ACTIVE");
+  const planned = missions.find((m) => m.status === "PLANNED");
+  const current = active || planned;
+
+  const startPlanning = () => {
+    setTarget(null);
     setPlanning(true);
-  }
+    setMessage(null);
+  };
 
-  function cancelPlanning() {
-    setPlanning(false);
-    setAreaPoints([]);
-  }
+  const startMission = async () => {
+    if (!target) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      let mission = planned;
+      if (!mission) {
+        const created = await api.post("/missions");
+        mission = created.data.mission;
+      }
+      const res = await api.post(`/missions/${mission.id}/start`, {
+        target: { lat: target[0], lon: target[1] },
+        waitMin,
+        speed,
+      });
+      setMessage(res.data.message);
+      setPlanning(false);
+      setTarget(null);
+    } catch (error) {
+      setMessage(errorText(error));
+    } finally {
+      setBusy(false);
+      loadMissions();
+    }
+  };
 
-  function confirmArea() {
-    if (areaPoints.length < 3) return;
+  const stopMission = async (returnHome) => {
+    if (!current) return;
+    setBusy(true);
+    try {
+      const res = await api.post(`/missions/${current.id}/stop`, { returnHome });
+      setMessage(res.data.message);
+    } catch (error) {
+      setMessage(errorText(error));
+    } finally {
+      setBusy(false);
+      loadMissions();
+    }
+  };
 
-    // Planning is local-only until the backend and robot are connected.
-    setPlanning(false);
-    window.alert(
-      "Mission area selected. Connect the backend to save and start the mission."
-    );
-  }
+  const tripProgress = (() => {
+    if (!active) return null;
+    if (t.mode === "GO_TO_B") return 33;
+    if (t.mode === "WAIT_AT_B") return 50;
+    if (t.mode === "RETURN_HOME") return 75;
+    if (t.mode === "HOLD") return 100;
+    return 10;
+  })();
 
   return (
     <div className="dashboard-page">
@@ -121,11 +139,7 @@ export default function Dashboard() {
           <h1>Dashboard</h1>
           <p>Live river cleanup operations</p>
         </div>
-
-        <div className="connection-status">
-          <span className="status-dot offline" />
-          <span>Robot connection unavailable</span>
-        </div>
+        <ConnectionBadge />
       </div>
 
       <section className="dashboard-top-grid">
@@ -133,82 +147,62 @@ export default function Dashboard() {
           <div className="panel-heading">
             <div>
               <h2>Live location</h2>
-              <p>Robot position and mission route</p>
+              <p>Boat position, home A and target B</p>
             </div>
-            <span className="panel-tag">
-              <MapPin size={13} />
-              GPS map
-            </span>
+            <Link to="/control" className="panel-tag link-tag">
+              <Gamepad2 size={13} />
+              Remote control
+            </Link>
           </div>
 
           {planning && (
             <div className="planning-banner">
               <div>
-                <strong>Map planning mode</strong>
-                <p>Click the map to mark at least three boundary points.</p>
+                <strong>New mission</strong>
+                <p>Click the map to pick target B. The boat goes there, waits, and returns to home A.</p>
               </div>
-              <button
-                className="small-button secondary"
-                onClick={cancelPlanning}
-              >
-                Cancel
+              <button className="small-button secondary" onClick={() => setPlanning(false)}>
+                <X size={14} /> Cancel
               </button>
             </div>
           )}
 
           <div className="map-frame">
-            <MapContainer
-              center={initialPosition}
-              zoom={16}
-              scrollWheelZoom
-              className="leaflet-map"
-            >
-            <TileLayer
-              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            <BoatMap
+              telemetry={t}
+              trail={trail}
+              pendingTarget={planning ? target : null}
+              onMapClick={planning ? setTarget : undefined}
             />
-
-              <Circle
-                center={initialPosition}
-                radius={12}
-                pathOptions={{
-                  color: "#64849b",
-                  fillColor: "#c8dceb",
-                  fillOpacity: 0.35,
-                }}
-              />
-
-              <Marker position={initialPosition} icon={robotIcon} />
-
-              <PlanningMap
-                planning={planning}
-                areaPoints={areaPoints}
-                setAreaPoints={setAreaPoints}
-              />
-            </MapContainer>
           </div>
 
           <div className="map-footer">
             <span>
               <span className="legend-dot robot" />
-              Robot position
+              Boat
             </span>
             <span>
               <span className="legend-line" />
-              Planned boundary
+              Trail
             </span>
-            <span className="map-coordinate">GPS: unavailable</span>
+            <span className="map-coordinate">
+              GPS: {t.fix ? `${t.lat.toFixed(6)}, ${t.lon.toFixed(6)}` : "no fix"}
+            </span>
           </div>
 
           {planning && (
             <div className="planning-actions">
-              <span>{areaPoints.length} boundary points selected</span>
-              <button
-                className="small-button primary"
-                disabled={areaPoints.length < 3}
-                onClick={confirmArea}
-              >
-                Confirm area
+              <label>
+                Wait at B (min)
+                <input type="number" min={0} max={30} value={waitMin} onChange={(e) => setWaitMin(Number(e.target.value))} />
+              </label>
+              <label>
+                Speed %
+                <input type="number" min={10} max={100} value={speed} onChange={(e) => setSpeed(Number(e.target.value))} />
+              </label>
+              <span>{target ? `B: ${target[0].toFixed(5)}, ${target[1].toFixed(5)}` : "No point picked"}</span>
+              <button className="small-button primary" disabled={!target || busy} onClick={startMission}>
+                Start mission
               </button>
             </div>
           )}
@@ -218,32 +212,32 @@ export default function Dashboard() {
           <StatusCard
             icon={Radio}
             label="Robot status"
-            value="Offline"
-            detail="Waiting for robot telemetry"
+            value={online ? t.mode || "Online" : "Offline"}
+            detail={online ? `${t.lte || "link"} · updated ${secondsAgo}s ago` : "Waiting for robot telemetry"}
           />
           <StatusCard
-            icon={Waves}
-            label="Debris collected"
-            value="— kg"
-            detail="No mission data available"
+            icon={Battery}
+            label="Battery"
+            value={t.ina ? `${t.v?.toFixed(2)} V` : "—"}
+            detail={t.ina ? `${t.batP}% · ${t.a?.toFixed(2)} A` : "No battery sensor data"}
           />
           <StatusCard
             icon={Gauge}
             label="Robot speed"
-            value="— m/s"
-            detail="Live speed unavailable"
+            value={typeof t.spd === "number" ? `${(t.spd / 3.6).toFixed(2)} m/s` : "— m/s"}
+            detail={typeof t.hdg === "number" ? `Heading ${t.hdg}°` : "Live speed unavailable"}
           />
           <StatusCard
             icon={MapPin}
             label="GPS coordinates"
-            value="—"
-            detail="Waiting for GPS telemetry"
+            value={t.fix ? `${t.lat.toFixed(5)}, ${t.lon.toFixed(5)}` : "—"}
+            detail={t.fix ? `${t.sats} satellites · HDOP ${t.hdop}` : "Waiting for GPS fix"}
           />
           <StatusCard
             icon={Clock3}
             label="Mission duration"
-            value="—"
-            detail="No active mission"
+            value={active ? duration(active.startedAt) : "—"}
+            detail={active ? active.missionCode : "No active mission"}
           />
         </section>
       </section>
@@ -252,95 +246,63 @@ export default function Dashboard() {
         <div className="mission-panel-heading">
           <div>
             <span className="section-eyebrow">MISSION CONTROL</span>
-            <h2>Active mission</h2>
+            <h2>{active ? "Active mission" : planned ? "Starting mission" : "No active mission"}</h2>
           </div>
           <span className="mission-state">
-            <span className="status-dot offline" />
-            No active mission
+            <span className={`status-dot ${active ? "online" : planned ? "waiting" : "offline"}`} />
+            {active ? `${active.missionCode} · ${t.mode || ""}` : planned ? `${planned.missionCode} · waiting for boat` : "Idle"}
           </span>
         </div>
 
+        {message && <div className="control-notice inline">{message}</div>}
+
         <div className="mission-progress-row">
           <div className="mission-summary">
-            <strong>Awaiting mission</strong>
-            <span>Start a mission to begin cleanup operations.</span>
+            <strong>{current ? current.name : "Awaiting mission"}</strong>
+            <span>
+              {active
+                ? t.msg || "Trip in progress"
+                : planned
+                  ? "Start sent, waiting for the boat to begin the trip"
+                  : "Plan a mission: pick B on the map, then start."}
+            </span>
           </div>
 
           <div className="progress-area">
             <div className="progress-label">
-              <span>Mission progress</span>
-              <strong>—</strong>
+              <span>Trip progress</span>
+              <strong>{tripProgress != null ? `${tripProgress}%` : "—"}</strong>
             </div>
             <div className="progress-track">
-              <div className="progress-fill" style={{ width: "0%" }} />
+              <div className="progress-fill" style={{ width: `${tripProgress ?? 0}%` }} />
             </div>
           </div>
 
-          {!missionActive ? (
-            <button
-              className="mission-action-button"
-              onClick={beginPlanning}
-              disabled={planning}
-            >
+          {current ? (
+            <div className="mission-buttons">
+              {active && (
+                <button className="mission-action-button" disabled={busy} onClick={() => stopMission(true)}>
+                  <Undo2 size={15} />
+                  Return home
+                </button>
+              )}
+              <button className="mission-action-button stop" disabled={busy} onClick={() => stopMission(false)}>
+                <Square size={15} />
+                {active ? "Stop mission" : "Cancel"}
+              </button>
+            </div>
+          ) : (
+            <button className="mission-action-button" onClick={startPlanning} disabled={planning}>
               <Plus size={16} />
               New mission
-            </button>
-          ) : (
-            <button
-              className="mission-action-button stop"
-              onClick={() => setMissionActive(false)}
-            >
-              <Square size={15} />
-              Stop mission
             </button>
           )}
         </div>
       </section>
 
-      <section className="panel command-panel">
-        <div className="panel-heading command-panel-heading">
-          <div>
-            <h2>Command activity</h2>
-            <p>Recent commands and robot responses</p>
-          </div>
-          <button className="small-button secondary" disabled>
-            View all activity
-          </button>
-        </div>
+      <CameraPanel />
 
-        <div className="table-scroll">
-          <table className="command-table">
-            <thead>
-              <tr>
-                <th>Time</th>
-                <th>Command / Activity</th>
-                <th>Initiated by</th>
-                <th>Result</th>
-              </tr>
-            </thead>
-            <tbody>
-              {commands.map((command) => (
-                <tr key={command.command}>
-                  <td>{command.time}</td>
-                  <td>
-                    <span className="command-name">
-                      <Activity size={15} />
-                      {command.command}
-                    </span>
-                  </td>
-                  <td>{command.source}</td>
-                  <td>
-                    <span className="result-unavailable">
-                      <ShieldCheck size={14} />
-                      {command.result}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
+      <ActivityLog title="Command activity" limit={10} />
     </div>
   );
 }

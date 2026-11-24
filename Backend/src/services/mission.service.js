@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import prisma from "../config/prisma.js";
 import { createAndPublishCommand } from "./command.service.js";
+import { isFirmwareProtocol } from "../config/boat.js";
+import { isBoatOnline, sendBoatText, buildCommandText } from "./boat.service.js";
 
 const ROBOT_ID = 1;
 
@@ -93,9 +95,10 @@ export const getMissionById = async (missionId) => {
         },
       },
       robot: true,
-      commands: true,
+      commands: { orderBy: { createdAt: "asc" } },
       telemetry: {
-        orderBy: { recordedAt: "desc" },
+        orderBy: { recordedAt: "asc" },
+        take: 5000,
       },
       images: true,
     },
@@ -106,7 +109,7 @@ export const getMissionById = async (missionId) => {
   return mission;
 };
 
-export const startMission = async (missionId, initiatedByUserId) => {
+const startMissionJson = async (missionId, initiatedByUserId) => {
   if (!Number.isInteger(missionId) || missionId <= 0) {
     throw new Error("Invalid mission ID");
   }
@@ -200,7 +203,7 @@ export const startMission = async (missionId, initiatedByUserId) => {
   );
 };
 
-export const stopMission = async (missionId, issuedByUserId) => {
+const stopMissionJson = async (missionId, issuedByUserId) => {
   if (!Number.isInteger(missionId) || missionId <= 0) {
     throw new Error("Invalid mission ID");
   }
@@ -348,3 +351,153 @@ export const processMissionStatusUpdate = async (message) => {
 
   return updatedMission;
 };
+// ------------------------------------------------------------------
+// Real boat firmware: no acknowledgements. The backend sends the text
+// commands and boat.service confirms the mission from the boat's mode.
+
+const startMissionFirmware = async (missionId, userId, options = {}) => {
+  if (!Number.isInteger(missionId) || missionId <= 0) {
+    throw new Error("Invalid mission ID");
+  }
+
+  const mission = await prisma.mission.findUnique({ where: { id: missionId } });
+  if (!mission) throw new Error("Mission not found");
+  if (mission.status !== "PLANNED") {
+    throw new Error("Only planned missions can be started");
+  }
+  if (!isBoatOnline()) throw new Error("Robot is offline. Cannot start mission");
+
+  const active = await prisma.mission.findFirst({
+    where: { robotId: mission.robotId, status: "ACTIVE" },
+  });
+  if (active) throw new Error("Another mission is already active");
+
+  const pending = await prisma.command.findFirst({
+    where: { type: "START_MISSION", status: "SENT", mission: { status: "PLANNED" } },
+  });
+  if (pending) {
+    throw new Error("Another mission start command is awaiting robot confirmation");
+  }
+
+  const lines = [];
+  if (options.target) lines.push(buildCommandText("target", options.target));
+  if (options.waitMin !== undefined && options.waitMin !== null) {
+    lines.push(buildCommandText("wait", { value: Number(options.waitMin) }));
+  }
+  if (options.speed !== undefined && options.speed !== null) {
+    lines.push(buildCommandText("speed", { value: Number(options.speed) }));
+  }
+  lines.push("go");
+
+  const command = await prisma.command.create({
+    data: {
+      type: "START_MISSION",
+      status: "PENDING",
+      issuedByUserId: userId,
+      missionId,
+      payload: { missionCode: mission.missionCode, lines, ...options },
+      attemptCount: 1,
+      lastAttemptAt: new Date(),
+    },
+  });
+
+  try {
+    for (const line of lines) {
+      await sendBoatText(line);
+      // Give the 4G module a moment between commands.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+  } catch (error) {
+    await prisma.command.update({
+      where: { id: command.id },
+      data: { status: "FAILED", lastError: error.message },
+    });
+    throw new Error(`Command publishing failed: ${error.message}`);
+  }
+
+  const sent = await prisma.command.update({
+    where: { id: command.id },
+    data: { status: "SENT", sentAt: new Date() },
+  });
+
+  return {
+    message: "Mission start sent. Waiting for the boat to begin the trip.",
+    mission,
+    command: sent,
+  };
+};
+
+const stopMissionFirmware = async (missionId, userId, options = {}) => {
+  if (!Number.isInteger(missionId) || missionId <= 0) {
+    throw new Error("Invalid mission ID");
+  }
+
+  const mission = await prisma.mission.findUnique({ where: { id: missionId } });
+  if (!mission) throw new Error("Mission not found");
+
+  // Cancel a mission that was never confirmed.
+  if (mission.status === "PLANNED") {
+    await prisma.command.updateMany({
+      where: { missionId, type: "START_MISSION", status: { in: ["PENDING", "SENT"] } },
+      data: { status: "FAILED", lastError: "Cancelled by operator" },
+    });
+    try { await sendBoatText("stop"); } catch { /* boat may be offline */ }
+    const updated = await prisma.mission.update({
+      where: { id: missionId },
+      data: { status: "STOPPED", endedAt: new Date() },
+    });
+    return { message: "Mission cancelled", mission: updated };
+  }
+
+  if (mission.status !== "ACTIVE") {
+    throw new Error("Only active missions can be stopped");
+  }
+
+  const text = options.returnHome ? "rth" : "stop";
+
+  const command = await prisma.command.create({
+    data: {
+      type: options.returnHome ? "RETURN_HOME" : "STOP_MISSION",
+      status: "PENDING",
+      issuedByUserId: userId,
+      missionId,
+      payload: { missionCode: mission.missionCode, text },
+      attemptCount: 1,
+      lastAttemptAt: new Date(),
+    },
+  });
+
+  await sendBoatText(text);
+
+  await prisma.command.update({
+    where: { id: command.id },
+    data: { status: "SENT", sentAt: new Date() },
+  });
+
+  // Offline boat can't confirm, so close the mission now.
+  if (!options.returnHome && !isBoatOnline()) {
+    const updated = await prisma.mission.update({
+      where: { id: missionId },
+      data: { status: "STOPPED", endedAt: new Date() },
+    });
+    return { message: "Stop sent (boat offline, mission closed)", mission: updated, command };
+  }
+
+  return {
+    message: options.returnHome
+      ? "Return home sent. Mission completes when the boat holds at home."
+      : "Stop sent. Waiting for the boat to confirm.",
+    mission,
+    command,
+  };
+};
+
+export const startMission = (missionId, userId, options) =>
+  isFirmwareProtocol()
+    ? startMissionFirmware(missionId, userId, options)
+    : startMissionJson(missionId, userId);
+
+export const stopMission = (missionId, userId, options) =>
+  isFirmwareProtocol()
+    ? stopMissionFirmware(missionId, userId, options)
+    : stopMissionJson(missionId, userId);

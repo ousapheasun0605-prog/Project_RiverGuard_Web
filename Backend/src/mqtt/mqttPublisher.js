@@ -1,6 +1,6 @@
 import { getMQTTClient } from "./mqttClient.js";
 
-export const publishMessage = (topic, message) => {
+export const publishMessage = (topic, message, { qos = 1 } = {}) => {
   const client = getMQTTClient();
 
   if (!client || !client.connected) {
@@ -13,17 +13,12 @@ export const publishMessage = (topic, message) => {
       : JSON.stringify(message);
 
   return new Promise((resolve, reject) => {
-    client.publish(
-      topic,
-      payload,
-      { qos: 1 },
-      (error) => {
-        if (error) {
-          return reject(error);
-        }
-
-        resolve();
+    client.publish(topic, payload, { qos }, (error) => {
+      if (error) {
+        return reject(error);
       }
-    );
+
+      resolve();
+    });
   });
 };
