@@ -1,0 +1,12 @@
+{
+  "watch": ["src"],
+  "ext": "js,mjs,cjs",
+  "ignore": [
+    "robot_online.json",
+    "ack*.json",
+    "telemetry*.json",
+    "node_modules/**",
+    "src/generated/**",
+    "prisma/migrations/**"
+  ]
+}
